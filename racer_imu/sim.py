@@ -214,6 +214,13 @@ class Trajectory:
         k = int(round((t_sim % self.duration) * self.fs))
         return min(k, len(self.t) - 1)
 
+    def wheel_distance(self, t_sim: float) -> float:
+        """Distance the wheels have rolled since t=0 [m] (signed), continuous across loop repeats."""
+        if not hasattr(self, "_s_wheel"):
+            self._s_wheel = np.concatenate([[0.0], np.cumsum(self.v_wheel[:-1]) / self.fs])
+        n = int(t_sim // self.duration)
+        return n * (self._s_wheel[-1] + self.v_wheel[-1] / self.fs) + self._s_wheel[self.index(t_sim)]
+
     def truth(self, t_sim: float) -> dict:
         """Planar truth, continuous across loop repeats."""
         n = int(t_sim // self.duration)
@@ -313,7 +320,8 @@ def generate_offline(cfg: Config, scenario: str, duration: float | None = None, 
             acc, gyro, quat = st.measure(traj, t_mid, rng)
             out["vesc"].append(ImuSample(t0 + t_mid, acc, gyro, quat, "vesc", rtt=rtt))
             if wheel_every and k % wheel_every == 0:
-                out["wheel"].append(WheelSample(t0 + t_mid, cfg.car.speed_to_erpm(traj.v_wheel[traj.index(t_mid)])))
+                out["wheel"].append(WheelSample(t0 + t_mid, cfg.car.speed_to_erpm(traj.v_wheel[traj.index(t_mid)]),
+                                                tacho=round(cfg.car.speed_to_erpm_gain * traj.wheel_distance(t_mid) / 10)))
     if "bno" in truth:
         st = truth["bno"]
         cm = ClockMapper()
@@ -340,6 +348,7 @@ class SimServer:
         self._stop = threading.Event()
         self.ports: dict[str, str] = {}
         self.last_drive: dict = {}
+        self.tacho_gain = cfg.car.speed_to_erpm_gain      # the "true" gain the simulated car has
         self._fds = []
         self._threads = []
         self.t0 = None
@@ -391,7 +400,9 @@ class SimServer:
                 elif p[0] == vp.COMM_GET_VALUES_SELECTIVE:
                     v = self.traj.v_wheel[self.traj.index(ts)]
                     reply = vp.encode_values_selective_reply(
-                        {"rpm": self.cfg.car.speed_to_erpm(v), "v_in": 16.4, "tachometer": 0})
+                        {"rpm": self.cfg.car.speed_to_erpm(v), "v_in": 16.4,
+                         # VESC tachometer: 6 counts per electrical revolution -> gain * distance / 10
+                         "tachometer": round(self.tacho_gain * self.traj.wheel_distance(ts) / 10)})
                 else:
                     self._record_drive(p)            # set commands have no reply
                     continue
