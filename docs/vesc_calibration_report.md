@@ -2,13 +2,15 @@
 
 **Board:** VESC 6 MkVI, firmware 7.00 (`60_MK6`), internal BMI160 IMU
 **Calibrated:** 2026-09-28. Gyro step 18:42, accel step 18:44, mount step 18:46
+**Verified:** 2026-09-30, with four independent tests on fresh data ([results](#verification-2026-09-30))
 **Files:** `calib/vesc_calib.json` (result), `logs/20260928_184150_calib_vesc/` (raw accel poses),
 `docs/vesc_calibration_plot.png` (plot below)
 
 ## Conclusion
 
 **The calibration is good and should be used.** It removes almost all of the accelerometer's systematic
-error and the gyro's drift.
+error and the gyro's drift. Two days later, four independent tests on fresh data all passed
+([Verification](#verification-2026-09-30)).
 
 | | Before | After (on the 12 fitted poses) | After (on poses it did not see*) |
 |---|---|---|---|
@@ -126,11 +128,54 @@ imus:
 
 ---
 
+## Verification (2026-09-30)
+
+Two days after calibrating, the calibration was checked with `tools/verify_calibration.py` on **fresh
+measurements it had never seen**. Each test compares against a physical fact, not against the fit.
+
+| Test | What was done | Physical truth | Result |
+|---|---|---|---|
+| **still** | 60 s untouched on the stand | a parked car doesn't rotate | ✅ PASS |
+| **poses** | 6 new orientations | \|a\| = g in any orientation | ✅ PASS |
+| **flip** | turned 180° on the floor (on the stand) | turning around cancels the floor's slope | ✅ OK |
+| **turn** | 2 full turns by hand, realigned on a wall | 2 turns = 720° | ✅ PASS |
+
+**still:** the calibrated gyro reads (0.002, −0.015, 0.011) °/s at rest, against a raw (−0.48, +0.05, +0.49).
+Heading drift is **0.67°/min**, against about 29°/min uncalibrated. \|a\| − g = +0.017 m/s².
+The bias had moved by about 0.03 °/s in two days, which is normal temperature creep.
+
+**poses:** calibrated \|a\| − g RMS **0.037 m/s²** (raw 0.144). The leave-one-out check above predicted
+0.033 RMS and 0.069 worst-case. Measured: 0.037 and 0.067, so the prediction held.
+
+| New pose | Gravity direction (sensor x, y, z) | Raw | Calibrated | Distance to nearest calibration pose |
+|---|---|---|---|---|
+| 1 | (−0.01, 0.01, 1.00) level | +0.178 | +0.011 | 0° |
+| 2 | (−0.05, −0.55, 0.84) | +0.013 | −0.039 | 9° |
+| 3 | (0.00, 0.59, 0.81) | +0.216 | +0.018 | 4° |
+| 4 | (−0.05, −0.89, 0.46) | −0.115 | −0.039 | 18° |
+| 5 | (0.06, 0.90, −0.43) nose up, past upside down | +0.181 | **+0.067** | 30° |
+| 6 | (−0.02, 0.04, −1.00) upside down | +0.016 | +0.006 | 4° |
+
+The weakest direction is pose 5, the one farthest from any calibration pose. All 6 tilted the car about
+the sensor's x axis, so the car's sides weren't tested.
+
+**flip:** the calibrated accelerometer reads level within **0.52°** (0.09 m/s²) relative to the axis the
+gyro saw the car turn about. That's OK for driving. A second run with more rocking on the stand gave 0.81°,
+so this setup can't resolve better than about ±0.05 m/s². On the raw data, the reversal independently
+measured a y-axis bias of +0.16 / +0.20 m/s², **confirming the calibration's +0.146**. One flip mixes leftover
+bias with a ~0.4° tilt between the calibrated accel axes and the gyro axes, so the two can't be separated.
+
+**turn:** the gyro counted **723.6°** for 720° = **+0.5 % scale error** (± ~0.25 % from realigning by
+hand). The calibration corrects gyro *bias*, not scale. 0.5 % is about 0.45° per 90° corner, so it isn't
+worth correcting unless repeat runs confirm it.
+
+---
+
 ## Commands
 
 Run from `~/sfu_racerbot/vsec_testing`. **Close VESC Tool first** (only one program can use the port).
-In VESC Tool, **App Settings → IMU**: accel and gyro offsets must be **0**, and rotation settings must stay as they
-were when calibrating.
+In VESC Tool, **App Settings → IMU**: the accel and gyro offsets must be **0**, or exactly the values recorded
+with `tools/vesc_offsets.py --written`. The rotation settings must stay as they were when calibrating.
 
 ### Calibrate
 ```bash
@@ -156,6 +201,23 @@ python3 tools/calib_live.py --vesc /dev/ttyACM0                          # live 
 python3 tools/imu_monitor.py --vesc /dev/ttyACM0                         # live numbers, "raw" and "cal" lines
 python3 tools/imu_filter_plot.py --rate 200 --accel-hz <X> --gyro-hz <Y> # VESC low-pass filter pole-zero
 ```
+
+### Verify (fresh data, PASS / OK / FAIL)
+```bash
+python3 tools/verify_calibration.py still --vesc /dev/ttyACM0             # 60 s untouched
+python3 tools/verify_calibration.py poses --vesc /dev/ttyACM0 --poses 6   # new orientations
+python3 tools/verify_calibration.py flip  --vesc /dev/ttyACM0             # turn 180 deg slowly in place
+python3 tools/verify_calibration.py turn  --vesc /dev/ttyACM0 --turns 1   # full turn(s), ONE direction, realign
+```
+Run them in your own terminal: each shows a live status line telling you when to move.
+
+### Put the bias into the VESC itself (optional)
+```bash
+python3 tools/vesc_offsets.py             # values to type into VESC Tool -> App Settings -> IMU
+python3 tools/vesc_offsets.py --written   # after "Write App Configuration": record them (prevents double correction)
+python3 tools/vesc_offsets.py --cleared   # after setting them back to 0
+```
+Only the bias fits into the VESC. Scale and cross-axis (`A_inv`) always stay in `racer_imu`.
 
 ### When to recalibrate
 - **Gyro only:** every session, or when `imu_monitor` shows the calibrated gyro reading > 0.1 °/s at rest.

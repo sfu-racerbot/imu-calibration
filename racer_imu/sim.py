@@ -30,7 +30,7 @@ from .clock_sync import ClockMapper
 from .frames import Config, R_to_quat, R_to_rpy, load_config, rot_z, slerp, quat_to_R, rpy_to_R
 from .types import G, ImuSample, WheelSample
 
-SCENARIOS = ("still", "push", "circle", "slalom", "drift", "stopgo", "shake", "poses")
+SCENARIOS = ("still", "push", "circle", "slalom", "drift", "stopgo", "shake", "poses", "flip", "turn")
 
 
 # ---------------------------------------------------------------- helpers
@@ -174,6 +174,23 @@ class Trajectory:
             R[k + 1] = R[k] @ _expm_so3(w[k] / fs)
         self._set_rotation_only(t, R)
 
+    def _yaw_on_tilted_table(self, total_yaw, hold=4.0, move=4.0, tilt_deg=(2.0, -1.5)):
+        """Still, rotate about the table's vertical by total_yaw, still again. The table is slightly tilted."""
+        fs = self.fs
+        n_hold, n_move = int(hold * fs), int(move * fs)
+        u = 0.5 - 0.5 * np.cos(np.pi * np.arange(n_move) / n_move)
+        yaw = np.concatenate([np.zeros(n_hold), total_yaw * u, np.full(n_hold, total_yaw)])
+        table = rpy_to_R(np.radians(tilt_deg[0]), np.radians(tilt_deg[1]), 0.0)
+        R = np.array([table @ rot_z(y) for y in yaw])
+        self.table_R = table
+        self._set_rotation_only(np.arange(len(yaw)) / fs, R)
+
+    def _build_flip(self):
+        self._yaw_on_tilted_table(np.pi)
+
+    def _build_turn(self):
+        self._yaw_on_tilted_table(2 * np.pi, move=6.0)
+
     def _build_poses(self):
         hold, move, fs = 2.5, 1.0, self.fs
         axis = [rpy_to_R(0, 0, 0), rpy_to_R(np.pi, 0, 0), rpy_to_R(np.pi / 2, 0, 0),
@@ -230,6 +247,7 @@ class SensorTruth:
     usb_latency_min: float = 0.0
     usb_latency_mean_extra: float = 0.0
     gyro_bias_drift: np.ndarray = field(default_factory=lambda: np.zeros(3))   # bias change [rad/s per s]
+    gyro_scale: float = 1.0                                                     # gyro reads scale x true rate
 
     def measure(self, traj: Trajectory, t_sim: float, rng) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         k = traj.index(t_sim - self.delay)
@@ -238,7 +256,7 @@ class SensorTruth:
         f_s = self.R.T @ f_b
         w_s = self.R.T @ w
         acc = self.scale @ f_s + self.acc_bias + rng.normal(0, self.acc_noise, 3)
-        gyro = w_s + self.gyro_bias + self.gyro_bias_drift * t_sim + rng.normal(0, self.gyro_noise, 3)
+        gyro = self.gyro_scale * w_s + self.gyro_bias + self.gyro_bias_drift * t_sim + rng.normal(0, self.gyro_noise, 3)
         quat = R_to_quat(rot_z(self.world_yaw) @ Rwb @ self.R)
         return acc, gyro, quat
 

@@ -77,7 +77,7 @@ def step_gyro(args, cal, log):
     acc = np.array([x.acc for x in s])
     if np.max(np.std(g, axis=0)) > 0.02 or np.max(np.std(acc, axis=0)) > 0.3:
         print("  WARNING: it moved during the capture, bias may be off. Re-run this step.")
-    cal.gyro_bias = g.mean(axis=0)
+    cal.gyro_bias = g.mean(axis=0) + cal.dev_gyro_offset    # total bias = what's left + what the VESC removes
     cal.meta["gyro"] = {"n": len(s), "bias_deg_s": np.degrees(cal.gyro_bias).round(4).tolist(),
                         "noise_deg_s": np.degrees(g.std(axis=0)).round(4).tolist(), "time": stamp()}
     print(f"  gyro bias [deg/s]: {np.degrees(cal.gyro_bias).round(3)}   noise {np.degrees(g.std(axis=0)).round(3)}")
@@ -125,7 +125,7 @@ def step_accel(args, cal, log):
                 f" faces {faces}")
 
     def on_sample(s):
-        s = ImuSample(s.t, s.acc, s.gyro - cal.gyro_bias, s.quat, s.src)   # use bias-free gyro for stillness
+        s = ImuSample(s.t, s.acc, s.gyro - cal.eff_gyro_bias(), s.quat, s.src)   # bias-free gyro for stillness
         m = pc.add(s)
         if m is not None:
             state["k"] += 1
@@ -146,12 +146,14 @@ def step_accel(args, cal, log):
     for i, samples in enumerate(pc.pose_samples):
         for s in samples:
             log.log(s, f"pose_{i}")
-    A_inv, b, info = fit_accel(pc.poses)
-    cal.A_inv, cal.acc_bias = A_inv, b
-    cal.meta["accel"] = {**info, "pose_means": np.round(pc.poses, 5).tolist(), "time": stamp(), "log": str(log.dir)}
+    A_inv, b, info = fit_accel(pc.poses)             # b = bias left in the data the VESC sends
+    cal.A_inv, cal.acc_bias = A_inv, b + cal.dev_acc_offset
+    cal.meta["accel"] = {**info, "pose_means": np.round(pc.poses, 5).tolist(), "time": stamp(), "log": str(log.dir),
+                         "device_offsets_accel_g_at_capture": (cal.dev_acc_offset / G).tolist()}
     after = np.linalg.norm((np.array(pc.poses) - b) @ A_inv.T, axis=1)
     print(f"  model {info['model']} ({info['n_poses']} poses)")
-    print(f"  bias [m/s^2]: {b.round(4)}")
+    print(f"  bias [m/s^2]: {cal.acc_bias.round(4)}" + (f"   (of which the VESC removes {cal.dev_acc_offset.round(4)})"
+                                                     if np.any(cal.dev_acc_offset) else ""))
     print(f"  A_inv:\n{np.array2string(A_inv, precision=5, prefix='    ')}")
     print(f"  |a| error rms: before {info['rms_before_ms2']:.4f}  after {info['rms_after_ms2']:.4f} m/s^2"
           f"   (max after {np.abs(after - G).max():.4f})")
@@ -200,7 +202,9 @@ def main():
     cal = ImuCalibration.load_or_identity(out)   # keep results of steps not re-run
     log = RunLogger(f"calib_{a.imu}", meta={"imu": a.imu, "steps": steps, "sim": bool(a.sim)})
     if a.imu.startswith("vesc"):
-        print("Reminder: VESC Tool IMU accel/gyro offsets should be 0, and VESC Tool must be closed.")
+        dev = np.any(cal.dev_acc_offset) or np.any(cal.dev_gyro_offset)
+        print("Reminder: close VESC Tool. VESC IMU offsets must be "
+              + ("the ones recorded by tools/vesc_offsets.py --written." if dev else "0 (none recorded)."))
     for st in steps:
         {"gyro": step_gyro, "accel": step_accel, "mount": step_mount}[st](a, cal, log)
     cal.meta.update({"imu": a.imu, "updated": stamp(), "log": str(log.dir), "sim": bool(a.sim)})

@@ -6,6 +6,10 @@ A_inv is symmetric (scale + cross-axis). With < 12 poses only a diagonal A_inv i
 (6 axis-aligned poses cannot pin down cross-axis terms).
 Gyro: bias = mean while perfectly still.
 Mount (extrinsic) rotation: roll/pitch from gravity while level, yaw from a straight forward push.
+
+Device offsets: the VESC can subtract accel/gyro offsets itself (App Settings -> IMU). acc_bias/gyro_bias
+here are always the TOTAL bias of the sensor; dev_*_offset records what the device already subtracts,
+and apply() removes only the remainder, so nothing is corrected twice (tools/vesc_offsets.py).
 """
 from __future__ import annotations
 
@@ -27,14 +31,28 @@ class ImuCalibration:
     acc_bias: np.ndarray = field(default_factory=lambda: np.zeros(3))
     gyro_bias: np.ndarray = field(default_factory=lambda: np.zeros(3))
     meta: dict = field(default_factory=dict)
+    dev_acc_offset: np.ndarray = field(default_factory=lambda: np.zeros(3))    # already subtracted by the device [m/s^2]
+    dev_gyro_offset: np.ndarray = field(default_factory=lambda: np.zeros(3))   # already subtracted by the device [rad/s]
+
+    def eff_acc_bias(self) -> np.ndarray:
+        """Bias still present in the data the device sends."""
+        return self.acc_bias - self.dev_acc_offset
+
+    def eff_gyro_bias(self) -> np.ndarray:
+        return self.gyro_bias - self.dev_gyro_offset
 
     def apply(self, s: ImuSample) -> ImuSample:
-        return ImuSample(s.t, self.A_inv @ (s.acc - self.acc_bias), s.gyro - self.gyro_bias, s.quat,
+        return ImuSample(s.t, self.A_inv @ (s.acc - self.eff_acc_bias()), s.gyro - self.eff_gyro_bias(), s.quat,
                          s.src, s.t_dev, s.rtt, s.label)
 
     def to_dict(self):
         return {"A_inv": self.A_inv.tolist(), "acc_bias": self.acc_bias.tolist(),
-                "gyro_bias": self.gyro_bias.tolist(), "units": "SI (m/s^2, rad/s)", "meta": self.meta}
+                "gyro_bias": self.gyro_bias.tolist(), "units": "SI (m/s^2, rad/s)",
+                "device_offsets": {"accel_g": (self.dev_acc_offset / G).tolist(),
+                                   "gyro_deg_s": np.degrees(self.dev_gyro_offset).tolist(),
+                                   "note": "offsets the device itself subtracts (VESC App Settings -> IMU); "
+                                           "only the remainder of acc_bias/gyro_bias is subtracted in racer_imu"},
+                "meta": self.meta}
 
     def save(self, path):
         path = Path(path)
@@ -44,7 +62,10 @@ class ImuCalibration:
     @classmethod
     def load(cls, path):
         d = json.loads(Path(path).read_text())
-        return cls(np.array(d["A_inv"]), np.array(d["acc_bias"]), np.array(d["gyro_bias"]), d.get("meta", {}))
+        dev = d.get("device_offsets", {})
+        return cls(np.array(d["A_inv"]), np.array(d["acc_bias"]), np.array(d["gyro_bias"]), d.get("meta", {}),
+                   np.array(dev.get("accel_g", [0.0, 0.0, 0.0])) * G,
+                   np.radians(dev.get("gyro_deg_s", [0.0, 0.0, 0.0])))
 
     @classmethod
     def load_or_identity(cls, path):

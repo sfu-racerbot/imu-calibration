@@ -52,3 +52,27 @@ def test_mount_rotation_and_kabsch():
     rng = np.random.default_rng(2)
     src = rng.normal(size=(100, 3))
     assert np.allclose(kabsch(src, src @ R_true.T), R_true, atol=1e-9)
+
+
+def test_device_offsets_are_not_subtracted_twice():
+    """Once the VESC subtracts (rounded) offsets itself, apply() on its data must give the same result."""
+    from racer_imu.calibration import ImuCalibration
+    rng = np.random.default_rng(3)
+    cal = ImuCalibration(np.eye(3) + 0.01 * rng.normal(size=(3, 3)), np.array([-0.013, 0.146, 0.079]),
+                         np.radians([-0.448, 0.066, 0.469]))
+    raw = ImuSample(0.0, np.array([0.1, -0.2, 9.9]), np.radians([1.0, -2.0, 3.0]))
+    before = cal.apply(raw)
+    cal.dev_acc_offset = np.round(cal.acc_bias / G, 3) * G           # what VESC Tool stores (3 decimals)
+    cal.dev_gyro_offset = np.radians(np.round(np.degrees(cal.gyro_bias), 3))
+    from_vesc = ImuSample(0.0, raw.acc - cal.dev_acc_offset, raw.gyro - cal.dev_gyro_offset)
+    after = cal.apply(from_vesc)
+    assert np.allclose(before.acc, after.acc, atol=1e-12) and np.allclose(before.gyro, after.gyro, atol=1e-12)
+
+
+def test_device_offsets_roundtrip_file(tmp_path):
+    from racer_imu.calibration import ImuCalibration
+    cal = ImuCalibration(acc_bias=np.array([0.1, 0.2, 0.3]), dev_acc_offset=np.array([0.098, 0.196, 0.294]),
+                         dev_gyro_offset=np.radians([0.5, 0.0, -0.5]))
+    cal.save(tmp_path / "c.json")
+    back = ImuCalibration.load(tmp_path / "c.json")
+    assert np.allclose(back.dev_acc_offset, cal.dev_acc_offset) and np.allclose(back.dev_gyro_offset, cal.dev_gyro_offset)

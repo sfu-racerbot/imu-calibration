@@ -77,7 +77,7 @@ def main():
                 rows = [("raw", acc, gyr)]
                 if s.src_name in cals:
                     c = cals[s.src_name][0]
-                    rows.append(("cal", c.A_inv @ (acc - c.acc_bias), gyr - c.gyro_bias))
+                    rows.append(("cal", c.A_inv @ (acc - c.eff_acc_bias()), gyr - c.eff_gyro_bias()))
                 for tag, av, gv in rows:
                     n = np.linalg.norm(av)
                     out.append("    %s acc  [m/s^2]  x %+8.3f  y %+8.3f  z %+8.3f   |a| %6.3f  |a|-g %+7.3f"

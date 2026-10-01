@@ -106,8 +106,8 @@ def main():
             if not isinstance(it, ImuSample):
                 continue
             state["n"] += 1
-            c_acc = cal.A_inv @ (it.acc - cal.acc_bias) if cal else it.acc
-            c_gyr = it.gyro - cal.gyro_bias if cal else it.gyro
+            c_acc = cal.A_inv @ (it.acc - cal.eff_acc_bias()) if cal else it.acc
+            c_gyr = it.gyro - cal.eff_gyro_bias() if cal else it.gyro
             er, ec = np.linalg.norm(it.acc) - G, np.linalg.norm(c_acc) - G
             wr, wc = np.linalg.norm(it.gyro), np.linalg.norm(c_gyr)
             hist.append((it.t, er, ec, np.degrees(wr), np.degrees(wc)))

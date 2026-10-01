@@ -39,7 +39,8 @@ def main():
         pts = [s.acc for s in load_imu_csv(csv) if s.label.startswith("pose_")]
         if pts:
             raw = np.array(pts)
-    cal_pts = (raw - cal.acc_bias) @ cal.A_inv.T
+    b_cap = cal.acc_bias - np.array(acc_meta.get("device_offsets_accel_g_at_capture", [0, 0, 0])) * G
+    cal_pts = (raw - b_cap) @ cal.A_inv.T
 
     RAW, CAL = "#d95f02", "#1b9e77"
     fig = plt.figure(figsize=(16, 9.5))
@@ -88,7 +89,7 @@ def main():
     # per-pose error, overlaid on one axis
     ax = fig.add_subplot(gs[0, 3])
     pm = np.linalg.norm(poses, axis=1) - G
-    pc = np.linalg.norm((poses - cal.acc_bias) @ cal.A_inv.T, axis=1) - G
+    pc = np.linalg.norm((poses - b_cap) @ cal.A_inv.T, axis=1) - G
     idx = np.arange(1, len(poses) + 1)
     ax.plot(idx, pm, "o-", color=RAW, label="raw")
     ax.plot(idx, pc, "o-", color=CAL, label="calibrated")
